@@ -1,0 +1,15 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: superbr_db
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin123
+      POSTGRES_DB: superbr
+    ports:
+      - "5432:5432"
+    volumes:
+      - superbr_data:/var/lib/postgresql/data
+
+volumes:
+  superbr_data:
