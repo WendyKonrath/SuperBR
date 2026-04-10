@@ -9,7 +9,12 @@ import (
 
 // ItemEstoque representa uma bateria individual no estoque,
 // identificada de forma única pelo seu ID.
-// Estados possíveis: "disponivel", "indisponivel", "emprestado".
+// Estados possíveis:
+//   - "disponivel"  → pronta para venda ou empréstimo
+//   - "reservado"   → reservada por uma venda pendente (aguardando confirmação)
+//   - "vendido"     → baixa definitiva após confirmação de venda
+//   - "emprestado"  → saiu do estoque por empréstimo
+//   - "indisponivel"→ removida manualmente do estoque disponível
 type ItemEstoque struct {
 	ID        uint            `gorm:"primaryKey;autoIncrement" json:"id"`
 	ProdutoID uint            `gorm:"not null" json:"produto_id"`
