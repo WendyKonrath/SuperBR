@@ -7,39 +7,47 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// Handler agrupa os endpoints HTTP do domínio de usuários.
 type Handler struct {
 	service *Service
 }
 
+// NewHandler cria o handler com o service injetado.
 func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
+// loginInput representa o corpo da requisição de login.
 type loginInput struct {
 	Login string `json:"login" binding:"required"`
 	Senha string `json:"senha"`
 }
 
+// primeiroAcessoInput representa o corpo da requisição de definição de senha inicial.
 type primeiroAcessoInput struct {
 	Login     string `json:"login" binding:"required"`
-	NovaSenha string `json:"nova_senha" binding:"required,min=6"`
+	NovaSenha string `json:"nova_senha" binding:"required,min=8"`
 }
 
+// criarUsuarioInput representa o corpo da requisição de criação de usuário.
 type criarUsuarioInput struct {
 	Nome   string `json:"nome" binding:"required"`
 	Login  string `json:"login" binding:"required"`
 	Perfil string `json:"perfil" binding:"required,oneof=admin financeiro vendas"`
 }
 
+// atualizarUsuarioInput representa o corpo da requisição de atualização de usuário.
 type atualizarUsuarioInput struct {
 	Nome   string `json:"nome" binding:"required"`
 	Perfil string `json:"perfil" binding:"required,oneof=admin financeiro vendas"`
 }
 
+// Login autentica o usuário com login e senha.
+// POST /api/auth/login
 func (h *Handler) Login(c *gin.Context) {
 	var input loginInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"erro": "dados inválidos"})
+		c.JSON(http.StatusBadRequest, gin.H{"erro": "informe login e senha"})
 		return
 	}
 
@@ -52,7 +60,7 @@ func (h *Handler) Login(c *gin.Context) {
 	if primeiroAcesso {
 		c.JSON(http.StatusOK, gin.H{
 			"primeiro_acesso": true,
-			"mensagem":        "cadastre sua senha para continuar",
+			"mensagem":        "Defina sua senha antes de continuar",
 		})
 		return
 	}
@@ -63,10 +71,12 @@ func (h *Handler) Login(c *gin.Context) {
 	})
 }
 
+// PrimeiroAcesso define a senha inicial do usuário após o cadastro.
+// POST /api/auth/primeiro-acesso
 func (h *Handler) PrimeiroAcesso(c *gin.Context) {
 	var input primeiroAcessoInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"erro": "dados inválidos"})
+		c.JSON(http.StatusBadRequest, gin.H{"erro": "nova_senha deve ter no mínimo 8 caracteres"})
 		return
 	}
 
@@ -79,8 +89,9 @@ func (h *Handler) PrimeiroAcesso(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"token": token})
 }
 
+// Me retorna os dados do usuário atualmente autenticado.
+// GET /api/auth/me
 func (h *Handler) Me(c *gin.Context) {
-	// Pega o id do usuário logado que foi salvo pelo middleware
 	usuarioID, _ := c.Get("usuario_id")
 
 	u, err := h.service.Me(usuarioID.(uint))
@@ -92,10 +103,12 @@ func (h *Handler) Me(c *gin.Context) {
 	c.JSON(http.StatusOK, u)
 }
 
+// Criar cadastra um novo usuário (somente admin/superadmin).
+// POST /api/usuarios
 func (h *Handler) Criar(c *gin.Context) {
 	var input criarUsuarioInput
 	if err := c.ShouldBindJSON(&input); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"erro": "dados inválidos"})
+		c.JSON(http.StatusBadRequest, gin.H{"erro": "dados inválidos — verifique nome, login e perfil"})
 		return
 	}
 
@@ -108,6 +121,8 @@ func (h *Handler) Criar(c *gin.Context) {
 	c.JSON(http.StatusCreated, u)
 }
 
+// Atualizar altera nome e perfil de um usuário existente.
+// PUT /api/usuarios/:id
 func (h *Handler) Atualizar(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
@@ -130,6 +145,8 @@ func (h *Handler) Atualizar(c *gin.Context) {
 	c.JSON(http.StatusOK, u)
 }
 
+// Desativar bloqueia o acesso de um usuário.
+// PATCH /api/usuarios/:id/desativar
 func (h *Handler) Desativar(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
@@ -145,31 +162,8 @@ func (h *Handler) Desativar(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"mensagem": "usuário desativado com sucesso"})
 }
 
-func (h *Handler) ResetarSenha(c *gin.Context) {
-	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"erro": "id inválido"})
-		return
-	}
-
-	if err := h.service.ResetarSenha(uint(id)); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"erro": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"mensagem": "senha resetada com sucesso — usuário deverá cadastrar nova senha no próximo acesso"})
-}
-
-func (h *Handler) Listar(c *gin.Context) {
-	usuarios, err := h.service.Listar()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"erro": "erro ao listar usuários"})
-		return
-	}
-
-	c.JSON(http.StatusOK, usuarios)
-}
-
+// Ativar reativa um usuário desativado.
+// PATCH /api/usuarios/:id/ativar
 func (h *Handler) Ativar(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
 	if err != nil {
@@ -183,4 +177,33 @@ func (h *Handler) Ativar(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"mensagem": "usuário ativado com sucesso"})
+}
+
+// ResetarSenha força o usuário a redefinir a senha no próximo acesso.
+// PATCH /api/usuarios/:id/resetar-senha
+func (h *Handler) ResetarSenha(c *gin.Context) {
+	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"erro": "id inválido"})
+		return
+	}
+
+	if err := h.service.ResetarSenha(uint(id)); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"erro": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"mensagem": "senha resetada — usuário deverá definir nova senha no próximo acesso"})
+}
+
+// Listar retorna todos os usuários do sistema.
+// GET /api/usuarios
+func (h *Handler) Listar(c *gin.Context) {
+	usuarios, err := h.service.Listar()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"erro": "erro ao listar usuários"})
+		return
+	}
+
+	c.JSON(http.StatusOK, usuarios)
 }

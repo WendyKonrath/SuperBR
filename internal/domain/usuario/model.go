@@ -1,7 +1,11 @@
+// Package usuario gerencia os usuários do sistema, autenticação e controle de acesso.
 package usuario
 
 import "time"
 
+// Usuario representa um usuário do sistema com suas credenciais e permissões.
+// O campo Senha nunca é serializado para JSON (tag json:"-").
+// Perfis válidos: "superadmin", "admin", "financeiro", "vendas".
 type Usuario struct {
 	ID             uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	Nome           string    `gorm:"type:varchar(100);not null" json:"nome"`

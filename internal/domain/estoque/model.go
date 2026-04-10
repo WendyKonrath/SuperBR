@@ -1,3 +1,5 @@
+// Package estoque gerencia o inventário individual de baterias (ItemEstoque)
+// e o resumo agregado por tipo de produto (Estoque).
 package estoque
 
 import (
@@ -5,6 +7,9 @@ import (
 	"time"
 )
 
+// ItemEstoque representa uma bateria individual no estoque,
+// identificada de forma única pelo seu ID.
+// Estados possíveis: "disponivel", "indisponivel", "emprestado".
 type ItemEstoque struct {
 	ID        uint            `gorm:"primaryKey;autoIncrement" json:"id"`
 	ProdutoID uint            `gorm:"not null" json:"produto_id"`
@@ -15,6 +20,8 @@ type ItemEstoque struct {
 	UpdatedAt time.Time       `json:"updated_at"`
 }
 
+// Estoque é o resumo consolidado de quantidade e valor por produto.
+// Atualizado automaticamente a cada entrada ou saída de ItemEstoque.
 type Estoque struct {
 	ID         uint            `gorm:"primaryKey;autoIncrement" json:"id"`
 	ProdutoID  uint            `gorm:"not null;unique" json:"produto_id"`

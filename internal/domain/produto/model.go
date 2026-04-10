@@ -1,7 +1,10 @@
+// Package produto gerencia o catálogo de produtos (baterias) do sistema.
 package produto
 
 import "time"
 
+// Produto representa um tipo de bateria comercializado pela empresa.
+// Cada produto pode ter múltiplos itens individuais no estoque (veja ItemEstoque).
 type Produto struct {
 	ID           uint      `gorm:"primaryKey;autoIncrement" json:"id"`
 	Nome         string    `gorm:"type:varchar(100);not null" json:"nome"`

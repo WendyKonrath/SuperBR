@@ -2,33 +2,39 @@ package estoque
 
 import (
 	"errors"
+	"super-br/internal/domain/movimentacao"
 	"super-br/internal/domain/produto"
 	"time"
 
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
+// Service contém a lógica de negócio do domínio de estoque.
 type Service struct {
 	repo        *Repository
 	produtoRepo *produto.Repository
+	movRepo     *movimentacao.Repository
 }
 
-func NewService(repo *Repository, produtoRepo *produto.Repository) *Service {
-	return &Service{repo: repo, produtoRepo: produtoRepo}
+// NewService cria o service injetando os repositórios necessários.
+func NewService(repo *Repository, produtoRepo *produto.Repository, movRepo *movimentacao.Repository) *Service {
+	return &Service{repo: repo, produtoRepo: produtoRepo, movRepo: movRepo}
 }
 
-// EntradaEstoque registra a entrada de um novo item no estoque
+// EntradaEstoque registra a chegada de uma nova bateria no estoque.
+// Cria o ItemEstoque, atualiza o resumo Estoque e registra a Movimentacao,
+// tudo em uma única transação atômica.
 func (s *Service) EntradaEstoque(produtoID uint, codLote string, usuarioID uint) (*ItemEstoque, error) {
-	// Verifica se o produto existe
 	_, err := s.produtoRepo.BuscarPorID(produtoID)
 	if err != nil {
 		return nil, errors.New("produto não encontrado")
 	}
 
-	// Inicia uma transação — garante que tudo acontece junto ou nada acontece
 	var novoItem *ItemEstoque
+
 	err = s.repo.DB().Transaction(func(tx *gorm.DB) error {
-		// Cria o item no estoque
+		// 1. Cria o item individual no estoque.
 		novoItem = &ItemEstoque{
 			ProdutoID: produtoID,
 			CodLote:   codLote,
@@ -38,47 +44,34 @@ func (s *Service) EntradaEstoque(produtoID uint, codLote string, usuarioID uint)
 			return err
 		}
 
-		// Atualiza o resumo do estoque
-		var estoqueResumo Estoque
-		result := tx.Where("produto_id = ?", produtoID).First(&estoqueResumo)
+		// 2. Atualiza (ou cria) o resumo de estoque do produto.
+		p, _ := s.produtoRepo.BuscarPorID(produtoID)
 
+		var resumo Estoque
+		result := tx.Where("produto_id = ?", produtoID).First(&resumo)
 		if result.Error != nil {
-			// Não existe ainda — cria o resumo
-			p, _ := s.produtoRepo.BuscarPorID(produtoID)
-			estoqueResumo = Estoque{
+			// Primeira unidade deste produto — cria o resumo.
+			resumo = Estoque{
 				ProdutoID:  produtoID,
 				QtdAtual:   1,
 				QtdPedido:  0,
 				QtdTotal:   1,
 				ValorTotal: p.ValorAtacado,
 			}
-			if err := tx.Create(&estoqueResumo).Error; err != nil {
+			if err := tx.Create(&resumo).Error; err != nil {
 				return err
 			}
 		} else {
-			// Já existe — atualiza
-			p, _ := s.produtoRepo.BuscarPorID(produtoID)
-			estoqueResumo.QtdAtual++
-			estoqueResumo.QtdTotal++
-			estoqueResumo.ValorTotal += p.ValorAtacado
-			if err := tx.Save(&estoqueResumo).Error; err != nil {
+			resumo.QtdAtual++
+			resumo.QtdTotal++
+			resumo.ValorTotal += p.ValorAtacado
+			if err := tx.Save(&resumo).Error; err != nil {
 				return err
 			}
 		}
 
-		// Registra a movimentação
-		mov := map[string]interface{}{
-			"item_id":    novoItem.ID,
-			"tipo":       "entrada",
-			"data":       time.Now(),
-			"usuario_id": usuarioID,
-			"created_at": time.Now(),
-		}
-		if err := tx.Table("movimentacaos").Create(&mov).Error; err != nil {
-			return err
-		}
-
-		return nil
+		// 3. Registra a movimentação usando o repository tipado (type-safe).
+		return s.movRepo.Registrar(tx, novoItem.ID, usuarioID, "entrada")
 	})
 
 	if err != nil {
@@ -88,61 +81,51 @@ func (s *Service) EntradaEstoque(produtoID uint, codLote string, usuarioID uint)
 	return novoItem, nil
 }
 
-// SaidaEstoque registra a saída de um item do estoque
+// SaidaEstoque registra a saída de um item específico do estoque pelo seu ID.
+// Usa SELECT FOR UPDATE para prevenir que dois usuários retirem o mesmo item.
 func (s *Service) SaidaEstoque(itemID uint, usuarioID uint) (*ItemEstoque, error) {
 	var itemAtualizado *ItemEstoque
 
 	err := s.repo.DB().Transaction(func(tx *gorm.DB) error {
-		// Busca o item com lock para evitar condição de corrida
+		// 1. Busca e trava o item para evitar race condition.
 		var item ItemEstoque
-		if err := tx.Set("gorm:query_option", "FOR UPDATE").First(&item, itemID).Error; err != nil {
+		if err := tx.
+			Clauses(clause.Locking{Strength: "UPDATE"}).
+			First(&item, itemID).Error; err != nil {
 			return errors.New("item não encontrado")
 		}
 
-		// Verifica se o item está disponível
 		if item.Estado != "disponivel" {
 			return errors.New("item não está disponível para saída")
 		}
 
-		// Atualiza o estado do item
+		// 2. Marca o item como indisponível.
 		item.Estado = "indisponivel"
 		if err := tx.Save(&item).Error; err != nil {
 			return err
 		}
 		itemAtualizado = &item
 
-		// Atualiza o resumo do estoque
-		var estoqueResumo Estoque
-		if err := tx.Where("produto_id = ?", item.ProdutoID).First(&estoqueResumo).Error; err != nil {
+		// 3. Atualiza o resumo de estoque.
+		var resumo Estoque
+		if err := tx.Where("produto_id = ?", item.ProdutoID).First(&resumo).Error; err != nil {
 			return err
 		}
 
-		// Garante que o estoque nunca fica negativo
-		if estoqueResumo.QtdAtual <= 0 {
+		if resumo.QtdAtual <= 0 {
 			return errors.New("estoque insuficiente")
 		}
 
 		p, _ := s.produtoRepo.BuscarPorID(item.ProdutoID)
-		estoqueResumo.QtdAtual--
-		estoqueResumo.QtdTotal--
-		estoqueResumo.ValorTotal -= p.ValorAtacado
-		if err := tx.Save(&estoqueResumo).Error; err != nil {
+		resumo.QtdAtual--
+		resumo.QtdTotal--
+		resumo.ValorTotal -= p.ValorAtacado
+		if err := tx.Save(&resumo).Error; err != nil {
 			return err
 		}
 
-		// Registra a movimentação
-		mov := map[string]interface{}{
-			"item_id":    item.ID,
-			"tipo":       "saida",
-			"data":       time.Now(),
-			"usuario_id": usuarioID,
-			"created_at": time.Now(),
-		}
-		if err := tx.Table("movimentacaos").Create(&mov).Error; err != nil {
-			return err
-		}
-
-		return nil
+		// 4. Registra a movimentação de forma type-safe.
+		return s.movRepo.Registrar(tx, item.ID, usuarioID, "saida")
 	})
 
 	if err != nil {
@@ -152,38 +135,7 @@ func (s *Service) SaidaEstoque(itemID uint, usuarioID uint) (*ItemEstoque, error
 	return itemAtualizado, nil
 }
 
-func (s *Service) BuscarItemPorID(id uint) (*ItemEstoque, error) {
-	item, err := s.repo.BuscarItemPorID(id)
-	if err != nil {
-		return nil, errors.New("item não encontrado")
-	}
-	return item, nil
-}
-
-func (s *Service) ListarItens() ([]ItemEstoque, error) {
-	return s.repo.ListarItens()
-}
-
-func (s *Service) ListarItensPorProduto(produtoID uint) ([]ItemEstoque, error) {
-	return s.repo.ListarItensPorProduto(produtoID)
-}
-
-func (s *Service) ListarItensPorEstado(estado string) ([]ItemEstoque, error) {
-	return s.repo.ListarItensPorEstado(estado)
-}
-
-func (s *Service) ListarEstoque() ([]Estoque, error) {
-	return s.repo.ListarEstoque()
-}
-
-func (s *Service) BuscarEstoquePorProduto(produtoID uint) (*Estoque, error) {
-	estoque, err := s.repo.BuscarEstoquePorProduto(produtoID)
-	if err != nil {
-		return nil, errors.New("estoque não encontrado para esse produto")
-	}
-	return estoque, nil
-}
-
+// DevolverItem retorna ao estoque um item que estava indisponível (saída manual).
 func (s *Service) DevolverItem(itemID uint, usuarioID uint) (*ItemEstoque, error) {
 	var itemAtualizado *ItemEstoque
 
@@ -193,45 +145,30 @@ func (s *Service) DevolverItem(itemID uint, usuarioID uint) (*ItemEstoque, error
 			return errors.New("item não encontrado")
 		}
 
-		// Só pode devolver item que está indisponível
 		if item.Estado == "disponivel" {
 			return errors.New("item já está disponível no estoque")
 		}
 
-		// Volta o item para disponível
 		item.Estado = "disponivel"
 		if err := tx.Save(&item).Error; err != nil {
 			return err
 		}
 		itemAtualizado = &item
 
-		// Atualiza o resumo do estoque
-		var estoqueResumo Estoque
-		if err := tx.Where("produto_id = ?", item.ProdutoID).First(&estoqueResumo).Error; err != nil {
+		var resumo Estoque
+		if err := tx.Where("produto_id = ?", item.ProdutoID).First(&resumo).Error; err != nil {
 			return err
 		}
 
 		p, _ := s.produtoRepo.BuscarPorID(item.ProdutoID)
-		estoqueResumo.QtdAtual++
-		estoqueResumo.QtdTotal++
-		estoqueResumo.ValorTotal += p.ValorAtacado
-		if err := tx.Save(&estoqueResumo).Error; err != nil {
+		resumo.QtdAtual++
+		resumo.QtdTotal++
+		resumo.ValorTotal += p.ValorAtacado
+		if err := tx.Save(&resumo).Error; err != nil {
 			return err
 		}
 
-		// Registra a movimentação de devolução
-		mov := map[string]interface{}{
-			"item_id":    item.ID,
-			"tipo":       "entrada",
-			"data":       time.Now(),
-			"usuario_id": usuarioID,
-			"created_at": time.Now(),
-		}
-		if err := tx.Table("movimentacaos").Create(&mov).Error; err != nil {
-			return err
-		}
-
-		return nil
+		return s.movRepo.Registrar(tx, item.ID, usuarioID, "entrada")
 	})
 
 	if err != nil {
@@ -241,6 +178,7 @@ func (s *Service) DevolverItem(itemID uint, usuarioID uint) (*ItemEstoque, error
 	return itemAtualizado, nil
 }
 
+// EmprestarItem marca uma bateria como emprestada, saindo do estoque disponível.
 func (s *Service) EmprestarItem(itemID uint, usuarioID uint) (*ItemEstoque, error) {
 	var itemAtualizado *ItemEstoque
 
@@ -250,7 +188,6 @@ func (s *Service) EmprestarItem(itemID uint, usuarioID uint) (*ItemEstoque, erro
 			return errors.New("item não encontrado")
 		}
 
-		// Só pode emprestar item disponível
 		if item.Estado != "disponivel" {
 			return errors.New("item não está disponível para empréstimo")
 		}
@@ -261,36 +198,23 @@ func (s *Service) EmprestarItem(itemID uint, usuarioID uint) (*ItemEstoque, erro
 		}
 		itemAtualizado = &item
 
-		// Atualiza o resumo — item emprestado sai do qtd_atual
-		var estoqueResumo Estoque
-		if err := tx.Where("produto_id = ?", item.ProdutoID).First(&estoqueResumo).Error; err != nil {
+		var resumo Estoque
+		if err := tx.Where("produto_id = ?", item.ProdutoID).First(&resumo).Error; err != nil {
 			return err
 		}
 
-		if estoqueResumo.QtdAtual <= 0 {
+		if resumo.QtdAtual <= 0 {
 			return errors.New("estoque insuficiente")
 		}
 
 		p, _ := s.produtoRepo.BuscarPorID(item.ProdutoID)
-		estoqueResumo.QtdAtual--
-		estoqueResumo.ValorTotal -= p.ValorAtacado
-		if err := tx.Save(&estoqueResumo).Error; err != nil {
+		resumo.QtdAtual--
+		resumo.ValorTotal -= p.ValorAtacado
+		if err := tx.Save(&resumo).Error; err != nil {
 			return err
 		}
 
-		// Registra a movimentação
-		mov := map[string]interface{}{
-			"item_id":    item.ID,
-			"tipo":       "saida",
-			"data":       time.Now(),
-			"usuario_id": usuarioID,
-			"created_at": time.Now(),
-		}
-		if err := tx.Table("movimentacaos").Create(&mov).Error; err != nil {
-			return err
-		}
-
-		return nil
+		return s.movRepo.Registrar(tx, item.ID, usuarioID, "saida")
 	})
 
 	if err != nil {
@@ -300,6 +224,7 @@ func (s *Service) EmprestarItem(itemID uint, usuarioID uint) (*ItemEstoque, erro
 	return itemAtualizado, nil
 }
 
+// DevolverEmprestimo retorna ao estoque um item que estava emprestado.
 func (s *Service) DevolverEmprestimo(itemID uint, usuarioID uint) (*ItemEstoque, error) {
 	var itemAtualizado *ItemEstoque
 
@@ -309,9 +234,8 @@ func (s *Service) DevolverEmprestimo(itemID uint, usuarioID uint) (*ItemEstoque,
 			return errors.New("item não encontrado")
 		}
 
-		// Só pode devolver item que está emprestado
 		if item.Estado != "emprestado" {
-			return errors.New("item não está emprestado")
+			return errors.New("item não está registrado como emprestado")
 		}
 
 		item.Estado = "disponivel"
@@ -320,32 +244,19 @@ func (s *Service) DevolverEmprestimo(itemID uint, usuarioID uint) (*ItemEstoque,
 		}
 		itemAtualizado = &item
 
-		// Atualiza o resumo — item volta ao qtd_atual
-		var estoqueResumo Estoque
-		if err := tx.Where("produto_id = ?", item.ProdutoID).First(&estoqueResumo).Error; err != nil {
+		var resumo Estoque
+		if err := tx.Where("produto_id = ?", item.ProdutoID).First(&resumo).Error; err != nil {
 			return err
 		}
 
 		p, _ := s.produtoRepo.BuscarPorID(item.ProdutoID)
-		estoqueResumo.QtdAtual++
-		estoqueResumo.ValorTotal += p.ValorAtacado
-		if err := tx.Save(&estoqueResumo).Error; err != nil {
+		resumo.QtdAtual++
+		resumo.ValorTotal += p.ValorAtacado
+		if err := tx.Save(&resumo).Error; err != nil {
 			return err
 		}
 
-		// Registra a movimentação
-		mov := map[string]interface{}{
-			"item_id":    item.ID,
-			"tipo":       "entrada",
-			"data":       time.Now(),
-			"usuario_id": usuarioID,
-			"created_at": time.Now(),
-		}
-		if err := tx.Table("movimentacaos").Create(&mov).Error; err != nil {
-			return err
-		}
-
-		return nil
+		return s.movRepo.Registrar(tx, item.ID, usuarioID, "entrada")
 	})
 
 	if err != nil {
@@ -353,4 +264,94 @@ func (s *Service) DevolverEmprestimo(itemID uint, usuarioID uint) (*ItemEstoque,
 	}
 
 	return itemAtualizado, nil
+}
+
+// RegistrarMovimentacao é um helper exposto para uso pelo domínio de Venda
+// ao dar baixa no estoque durante uma venda, dentro da transação da venda.
+func (s *Service) RegistrarMovimentacao(tx *gorm.DB, itemID, usuarioID uint, tipo string) error {
+	return s.movRepo.Registrar(tx, itemID, usuarioID, tipo)
+}
+
+// BuscarItemPorID retorna um item de estoque pelo ID.
+func (s *Service) BuscarItemPorID(id uint) (*ItemEstoque, error) {
+	item, err := s.repo.BuscarItemPorID(id)
+	if err != nil {
+		return nil, errors.New("item não encontrado")
+	}
+	return item, nil
+}
+
+// ListarItens retorna todos os itens de estoque, com filtros opcionais.
+func (s *Service) ListarItens() ([]ItemEstoque, error) {
+	return s.repo.ListarItens()
+}
+
+// ListarItensPorProduto retorna itens de um produto específico.
+func (s *Service) ListarItensPorProduto(produtoID uint) ([]ItemEstoque, error) {
+	return s.repo.ListarItensPorProduto(produtoID)
+}
+
+// ListarItensPorEstado filtra itens pelo estado atual.
+func (s *Service) ListarItensPorEstado(estado string) ([]ItemEstoque, error) {
+	return s.repo.ListarItensPorEstado(estado)
+}
+
+// ListarEstoque retorna o resumo consolidado de estoque por produto.
+func (s *Service) ListarEstoque() ([]Estoque, error) {
+	return s.repo.ListarEstoque()
+}
+
+// BuscarEstoquePorProduto retorna o resumo de estoque de um produto específico.
+func (s *Service) BuscarEstoquePorProduto(produtoID uint) (*Estoque, error) {
+	e, err := s.repo.BuscarEstoquePorProduto(produtoID)
+	if err != nil {
+		return nil, errors.New("estoque não encontrado para esse produto")
+	}
+	return e, nil
+}
+
+// BuscarItemDisponivel localiza uma bateria disponível para venda.
+// Exposto para o domínio de Venda usar dentro de sua própria transação.
+func (s *Service) BuscarItemDisponivel(produtoID uint, tx *gorm.DB) (*ItemEstoque, error) {
+	return s.repo.BuscarItemDisponivel(produtoID, tx)
+}
+
+// AtualizarResumoEstoque recalcula e persiste o resumo de estoque dentro de uma transação.
+// Exposto para uso pelo domínio de Venda ao confirmar ou cancelar uma venda.
+func (s *Service) AtualizarResumoEstoque(tx *gorm.DB, produtoID uint, deltaQtd int, deltaValor float64) error {
+	var resumo Estoque
+	if err := tx.Where("produto_id = ?", produtoID).First(&resumo).Error; err != nil {
+		return errors.New("resumo de estoque não encontrado")
+	}
+
+	resumo.QtdAtual += deltaQtd
+	resumo.QtdTotal += deltaQtd
+	resumo.ValorTotal += deltaValor
+
+	if resumo.QtdAtual < 0 {
+		return errors.New("operação resultaria em estoque negativo")
+	}
+
+	return tx.Save(&resumo).Error
+}
+
+// AtualizarEstadoItem altera o estado de um item dentro de uma transação existente.
+// Exposto para o domínio de Venda marcar itens como "vendido" ou reverter para "disponivel".
+func (s *Service) AtualizarEstadoItem(tx *gorm.DB, itemID uint, novoEstado string) error {
+	return tx.Model(&ItemEstoque{}).Where("id = ?", itemID).Update("estado", novoEstado).Error
+}
+
+// calcularValorTotal é um helper interno para evitar acesso ao produtoRepo fora do service.
+// Retorna o valor de atacado do produto para uso nos cálculos de resumo.
+func (s *Service) calcularValorTotal(produtoID uint, qtd int) (float64, error) {
+	p, err := s.produtoRepo.BuscarPorID(produtoID)
+	if err != nil {
+		return 0, errors.New("produto não encontrado ao calcular valor")
+	}
+	return p.ValorAtacado * float64(qtd), nil
+}
+
+// nowUTC retorna o tempo atual em UTC para padronização de timestamps.
+func nowUTC() time.Time {
+	return time.Now().UTC()
 }

@@ -1,3 +1,5 @@
+// Package relatorio gerencia a geração e o armazenamento de relatórios
+// em PDF sobre estoque e vendas, conforme o UC05 do documento de escopo.
 package relatorio
 
 import (
@@ -5,6 +7,15 @@ import (
 	"time"
 )
 
+// TiposRelatorio define os tipos de relatório suportados pelo sistema.
+const (
+	TipoEstoque = "estoque"
+	TipoVendas  = "vendas"
+	TipoAmbos   = "ambos"
+)
+
+// Relatorio representa um relatório gerado pelo sistema.
+// O campo CaminhoArquivo armazena o path do PDF gerado no servidor.
 type Relatorio struct {
 	ID             uint            `gorm:"primaryKey;autoIncrement" json:"id"`
 	UsuarioID      uint            `gorm:"not null" json:"usuario_id"`
