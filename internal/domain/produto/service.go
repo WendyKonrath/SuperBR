@@ -15,6 +15,12 @@ func (s *Service) Criar(nome, categoria string, valorAtacado, valorVarejo float6
 		return nil, errors.New("valores não podem ser negativos")
 	}
 
+	// Verifica se já existe produto com mesmo nome e categoria
+	_, err := s.repo.BuscarPorNomeECategoria(nome, categoria)
+	if err == nil {
+		return nil, errors.New("já existe um produto com esse nome e categoria")
+	}
+
 	p := &Produto{
 		Nome:         nome,
 		Categoria:    categoria,
@@ -55,6 +61,12 @@ func (s *Service) Atualizar(id uint, nome, categoria string, valorAtacado, valor
 		return nil, errors.New("valores não podem ser negativos")
 	}
 
+	// Verifica se já existe outro produto com mesmo nome e categoria
+	existente, err := s.repo.BuscarPorNomeECategoria(nome, categoria)
+	if err == nil && existente.ID != id {
+		return nil, errors.New("já existe um produto com esse nome e categoria")
+	}
+
 	p.Nome = nome
 	p.Categoria = categoria
 	p.ValorAtacado = valorAtacado
@@ -71,6 +83,15 @@ func (s *Service) Deletar(id uint) error {
 	_, err := s.repo.BuscarPorID(id)
 	if err != nil {
 		return errors.New("produto não encontrado")
+	}
+
+	// Não permite deletar produto que tem itens no estoque
+	temItens, err := s.repo.PossuiItensNoEstoque(id)
+	if err != nil {
+		return errors.New("erro ao verificar estoque do produto")
+	}
+	if temItens {
+		return errors.New("não é possível deletar um produto que possui itens no estoque")
 	}
 
 	return s.repo.Deletar(id)
