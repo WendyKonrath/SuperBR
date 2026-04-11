@@ -36,6 +36,7 @@ func main() {
 	estoqueService := estoque.NewService(estoqueRepo, produtoRepo, movRepo)
 	sucataService := sucata.NewService(sucataRepo)
 	vendaService := venda.NewService(vendaRepo, estoqueRepo, produtoRepo, movRepo)
+	movimentacaoService := movimentacao.NewService(movRepo)
 
 	// Handlers
 	usuarioHandler := usuario.NewHandler(usuarioService)
@@ -43,6 +44,7 @@ func main() {
 	estoqueHandler := estoque.NewHandler(estoqueService)
 	sucataHandler := sucata.NewHandler(sucataService)
 	vendaHandler := venda.NewHandler(vendaService)
+	movimentacaoHandler := movimentacao.NewHandler(movimentacaoService)
 
 	r := gin.Default()
 
@@ -96,18 +98,16 @@ func main() {
 		protected.POST("/sucata/saida", middleware.ExigirPerfil("admin"), sucataHandler.SaidaSucata)
 
 		// Vendas
-		// Criar: vendas e admin podem abrir uma venda
-		// Confirmar/Cancelar: somente admin — acao critica que baixa estoque definitivamente
 		protected.POST("/vendas", middleware.ExigirPerfil("admin", "vendas"), vendaHandler.CriarVenda)
 		protected.GET("/vendas", middleware.ExigirPerfil("admin", "financeiro", "vendas"), vendaHandler.Listar)
 		protected.GET("/vendas/:id", middleware.ExigirPerfil("admin", "financeiro", "vendas"), vendaHandler.BuscarPorID)
 		protected.PATCH("/vendas/:id/confirmar", middleware.ExigirPerfil("admin"), vendaHandler.ConfirmarVenda)
 		protected.PATCH("/vendas/:id/cancelar", middleware.ExigirPerfil("admin"), vendaHandler.CancelarVenda)
 
-		// Dominios futuros:
-		// /notificacoes  -> notificacao.Handler
-		// /relatorios    -> relatorio.Handler
-		// /movimentacoes -> movimentacao.Handler
+		// Movimentacoes — somente leitura, todos os perfis autenticados
+		// Filtros via query: ?tipo=entrada|saida, ?item_id=N, ?produto_id=N
+		// ?inicio=YYYY-MM-DD&fim=YYYY-MM-DD
+		protected.GET("/movimentacoes", movimentacaoHandler.Listar)
 	}
 
 	if err := r.Run(":" + cfg.ServerPort); err != nil {
