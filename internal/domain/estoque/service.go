@@ -3,6 +3,7 @@ package estoque
 import (
 	"errors"
 	"super-br/internal/domain/movimentacao"
+	"super-br/internal/domain/notificacao"
 	"super-br/internal/domain/produto"
 	"time"
 
@@ -15,16 +16,30 @@ type Service struct {
 	repo        *Repository
 	produtoRepo *produto.Repository
 	movRepo     *movimentacao.Repository
+	notifService *notificacao.Service
+	estoqueMinimo int
 }
 
 // NewService cria o service injetando os repositórios necessários.
-func NewService(repo *Repository, produtoRepo *produto.Repository, movRepo *movimentacao.Repository) *Service {
-	return &Service{repo: repo, produtoRepo: produtoRepo, movRepo: movRepo}
+func NewService(
+	repo *Repository,
+	produtoRepo *produto.Repository,
+	movRepo *movimentacao.Repository,
+	notifService *notificacao.Service,
+	estoqueMinimo int,
+) *Service {
+	return &Service{
+		repo:          repo,
+		produtoRepo:   produtoRepo,
+		movRepo:       movRepo,
+		notifService:  notifService,
+		estoqueMinimo: estoqueMinimo,
+	}
 }
 
 // EntradaEstoque registra a chegada de uma nova bateria no estoque.
-// Cria o ItemEstoque, atualiza o resumo Estoque e registra a Movimentacao,
-// tudo em uma única transação atômica.
+// Cria o ItemEstoque, atualiza o resumo Estoque, registra a Movimentacao
+// e dispara notificação de entrada, tudo em uma única transação atômica.
 func (s *Service) EntradaEstoque(produtoID uint, codLote string, usuarioID uint) (*ItemEstoque, error) {
 	_, err := s.produtoRepo.BuscarPorID(produtoID)
 	if err != nil {
@@ -50,7 +65,6 @@ func (s *Service) EntradaEstoque(produtoID uint, codLote string, usuarioID uint)
 		var resumo Estoque
 		result := tx.Where("produto_id = ?", produtoID).First(&resumo)
 		if result.Error != nil {
-			// Primeira unidade deste produto — cria o resumo.
 			resumo = Estoque{
 				ProdutoID:  produtoID,
 				QtdAtual:   1,
@@ -70,8 +84,13 @@ func (s *Service) EntradaEstoque(produtoID uint, codLote string, usuarioID uint)
 			}
 		}
 
-		// 3. Registra a movimentação usando o repository tipado (type-safe).
-		return s.movRepo.Registrar(tx, novoItem.ID, usuarioID, "entrada")
+		// 3. Registra a movimentação.
+		if err := s.movRepo.Registrar(tx, novoItem.ID, usuarioID, "entrada"); err != nil {
+			return err
+		}
+
+		// 4. Notifica entrada no estoque.
+		return s.notifService.NotificarEntradaEstoque(tx, p.Nome, codLote)
 	})
 
 	if err != nil {
@@ -82,12 +101,10 @@ func (s *Service) EntradaEstoque(produtoID uint, codLote string, usuarioID uint)
 }
 
 // SaidaEstoque registra a saída de um item específico do estoque pelo seu ID.
-// Usa SELECT FOR UPDATE para prevenir que dois usuários retirem o mesmo item.
 func (s *Service) SaidaEstoque(itemID uint, usuarioID uint) (*ItemEstoque, error) {
 	var itemAtualizado *ItemEstoque
 
 	err := s.repo.DB().Transaction(func(tx *gorm.DB) error {
-		// 1. Busca e trava o item para evitar race condition.
 		var item ItemEstoque
 		if err := tx.
 			Clauses(clause.Locking{Strength: "UPDATE"}).
@@ -99,14 +116,12 @@ func (s *Service) SaidaEstoque(itemID uint, usuarioID uint) (*ItemEstoque, error
 			return errors.New("item não está disponível para saída")
 		}
 
-		// 2. Marca o item como indisponível.
 		item.Estado = "indisponivel"
 		if err := tx.Save(&item).Error; err != nil {
 			return err
 		}
 		itemAtualizado = &item
 
-		// 3. Atualiza o resumo de estoque.
 		var resumo Estoque
 		if err := tx.Where("produto_id = ?", item.ProdutoID).First(&resumo).Error; err != nil {
 			return err
@@ -124,8 +139,22 @@ func (s *Service) SaidaEstoque(itemID uint, usuarioID uint) (*ItemEstoque, error
 			return err
 		}
 
-		// 4. Registra a movimentação de forma type-safe.
-		return s.movRepo.Registrar(tx, item.ID, usuarioID, "saida")
+		// Registra a movimentação.
+		if err := s.movRepo.Registrar(tx, item.ID, usuarioID, "saida"); err != nil {
+			return err
+		}
+
+		// Notifica saída do estoque.
+		if err := s.notifService.NotificarSaidaEstoque(tx, p.Nome, item.ID); err != nil {
+			return err
+		}
+
+		// Notifica estoque baixo se necessário.
+		if resumo.QtdAtual <= s.estoqueMinimo {
+			return s.notifService.NotificarEstoqueBaixo(tx, p.Nome, resumo.QtdAtual, s.estoqueMinimo)
+		}
+
+		return nil
 	})
 
 	if err != nil {
@@ -214,7 +243,17 @@ func (s *Service) EmprestarItem(itemID uint, usuarioID uint) (*ItemEstoque, erro
 			return err
 		}
 
-		return s.movRepo.Registrar(tx, item.ID, usuarioID, "saida")
+		// Registra movimentação.
+		if err := s.movRepo.Registrar(tx, item.ID, usuarioID, "saida"); err != nil {
+			return err
+		}
+
+		// Notifica estoque baixo se necessário.
+		if resumo.QtdAtual <= s.estoqueMinimo {
+			return s.notifService.NotificarEstoqueBaixo(tx, p.Nome, resumo.QtdAtual, s.estoqueMinimo)
+		}
+
+		return nil
 	})
 
 	if err != nil {
@@ -266,8 +305,7 @@ func (s *Service) DevolverEmprestimo(itemID uint, usuarioID uint) (*ItemEstoque,
 	return itemAtualizado, nil
 }
 
-// RegistrarMovimentacao é um helper exposto para uso pelo domínio de Venda
-// ao dar baixa no estoque durante uma venda, dentro da transação da venda.
+// RegistrarMovimentacao é um helper exposto para uso pelo domínio de Venda.
 func (s *Service) RegistrarMovimentacao(tx *gorm.DB, itemID, usuarioID uint, tipo string) error {
 	return s.movRepo.Registrar(tx, itemID, usuarioID, tipo)
 }
@@ -281,7 +319,7 @@ func (s *Service) BuscarItemPorID(id uint) (*ItemEstoque, error) {
 	return item, nil
 }
 
-// ListarItens retorna todos os itens de estoque, com filtros opcionais.
+// ListarItens retorna todos os itens de estoque.
 func (s *Service) ListarItens() ([]ItemEstoque, error) {
 	return s.repo.ListarItens()
 }
@@ -311,13 +349,11 @@ func (s *Service) BuscarEstoquePorProduto(produtoID uint) (*Estoque, error) {
 }
 
 // BuscarItemDisponivel localiza uma bateria disponível para venda.
-// Exposto para o domínio de Venda usar dentro de sua própria transação.
 func (s *Service) BuscarItemDisponivel(produtoID uint, tx *gorm.DB) (*ItemEstoque, error) {
 	return s.repo.BuscarItemDisponivel(produtoID, tx)
 }
 
 // AtualizarResumoEstoque recalcula e persiste o resumo de estoque dentro de uma transação.
-// Exposto para uso pelo domínio de Venda ao confirmar ou cancelar uma venda.
 func (s *Service) AtualizarResumoEstoque(tx *gorm.DB, produtoID uint, deltaQtd int, deltaValor float64) error {
 	var resumo Estoque
 	if err := tx.Where("produto_id = ?", produtoID).First(&resumo).Error; err != nil {
@@ -336,13 +372,11 @@ func (s *Service) AtualizarResumoEstoque(tx *gorm.DB, produtoID uint, deltaQtd i
 }
 
 // AtualizarEstadoItem altera o estado de um item dentro de uma transação existente.
-// Exposto para o domínio de Venda marcar itens como "vendido" ou reverter para "disponivel".
 func (s *Service) AtualizarEstadoItem(tx *gorm.DB, itemID uint, novoEstado string) error {
 	return tx.Model(&ItemEstoque{}).Where("id = ?", itemID).Update("estado", novoEstado).Error
 }
 
-// calcularValorTotal é um helper interno para evitar acesso ao produtoRepo fora do service.
-// Retorna o valor de atacado do produto para uso nos cálculos de resumo.
+// calcularValorTotal retorna o valor de atacado do produto para uso nos cálculos de resumo.
 func (s *Service) calcularValorTotal(produtoID uint, qtd int) (float64, error) {
 	p, err := s.produtoRepo.BuscarPorID(produtoID)
 	if err != nil {

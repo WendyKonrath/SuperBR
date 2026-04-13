@@ -43,3 +43,8 @@ func (r *Repository) Criar(s *EstoqueSucata) error {
 func (r *Repository) Atualizar(s *EstoqueSucata) error {
 	return r.db.Save(s).Error
 }
+
+// DB expõe a conexão para uso em transações iniciadas no service.
+func (r *Repository) DB() *gorm.DB {
+	return r.db
+}

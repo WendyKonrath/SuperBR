@@ -19,3 +19,8 @@ type EstoqueSucata struct {
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
 }
+
+// TableName força o nome da tabela no banco para evitar pluralização incorreta do GORM.
+func (EstoqueSucata) TableName() string {
+	return "estoque_sucatas"
+}

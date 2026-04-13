@@ -17,20 +17,17 @@ func NewHandler(service *Service) *Handler {
 	return &Handler{service: service}
 }
 
-// cadastrarTipoInput representa o corpo da requisição de cadastro de tipo de sucata.
 type cadastrarTipoInput struct {
 	TipoBateria   string  `json:"tipo_bateria" binding:"required"`
 	PesoUnitario  float64 `json:"peso_unitario" binding:"required,gt=0"`
 	ValorUnitario float64 `json:"valor_unitario" binding:"required,gt=0"`
 }
 
-// atualizarTipoInput representa o corpo da requisição de atualização de tipo de sucata.
 type atualizarTipoInput struct {
 	PesoUnitario  float64 `json:"peso_unitario" binding:"required,gt=0"`
 	ValorUnitario float64 `json:"valor_unitario" binding:"required,gt=0"`
 }
 
-// movimentacaoSucataInput representa o corpo das requisições de entrada e saída de sucata.
 type movimentacaoSucataInput struct {
 	TipoBateria string `json:"tipo_bateria" binding:"required"`
 	Qtd         int    `json:"qtd" binding:"required,min=1"`
@@ -87,7 +84,9 @@ func (h *Handler) EntradaSucata(c *gin.Context) {
 		return
 	}
 
-	sucata, err := h.service.EntradaSucata(input.TipoBateria, input.Qtd)
+	usuarioID, _ := c.Get("usuario_id")
+
+	sucata, err := h.service.EntradaSucata(input.TipoBateria, input.Qtd, usuarioID.(uint))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"erro": err.Error()})
 		return
@@ -105,7 +104,9 @@ func (h *Handler) SaidaSucata(c *gin.Context) {
 		return
 	}
 
-	sucata, err := h.service.SaidaSucata(input.TipoBateria, input.Qtd)
+	usuarioID, _ := c.Get("usuario_id")
+
+	sucata, err := h.service.SaidaSucata(input.TipoBateria, input.Qtd, usuarioID.(uint))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"erro": err.Error()})
 		return

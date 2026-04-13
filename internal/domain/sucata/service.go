@@ -1,15 +1,21 @@
 package sucata
 
-import "errors"
+import (
+	"errors"
+	movs "super-br/internal/domain/movimentacao_sucata"
+
+	"gorm.io/gorm"
+)
 
 // Service contém a lógica de negócio do domínio de sucata.
 type Service struct {
-	repo *Repository
+	repo    *Repository
+	movRepo *movs.Repository
 }
 
-// NewService cria o service com o repositório injetado.
-func NewService(repo *Repository) *Service {
-	return &Service{repo: repo}
+// NewService cria o service com os repositórios injetados.
+func NewService(repo *Repository, movRepo *movs.Repository) *Service {
+	return &Service{repo: repo, movRepo: movRepo}
 }
 
 // CadastrarTipo registra um novo tipo de sucata com peso e valor unitário.
@@ -22,7 +28,6 @@ func (s *Service) CadastrarTipo(tipoBateria string, pesoUnitario, valorUnitario 
 		return nil, errors.New("valor unitário deve ser maior que zero")
 	}
 
-	// Impede cadastro duplicado de mesmo tipo.
 	_, err := s.repo.BuscarPorTipo(tipoBateria)
 	if err == nil {
 		return nil, errors.New("tipo de sucata já cadastrado")
@@ -61,8 +66,6 @@ func (s *Service) AtualizarTipo(id uint, pesoUnitario, valorUnitario float64) (*
 
 	sucata.PesoUnitario = pesoUnitario
 	sucata.ValorUnitario = valorUnitario
-
-	// Recalcula os totais com os novos valores unitários e a quantidade atual.
 	sucata.PesoTotal = float64(sucata.Qtd) * pesoUnitario
 	sucata.ValorTotal = float64(sucata.Qtd) * valorUnitario
 
@@ -74,8 +77,8 @@ func (s *Service) AtualizarTipo(id uint, pesoUnitario, valorUnitario float64) (*
 }
 
 // EntradaSucata registra a chegada de unidades de sucata de um tipo específico.
-// O tipo deve estar previamente cadastrado via CadastrarTipo.
-func (s *Service) EntradaSucata(tipoBateria string, qtd int) (*EstoqueSucata, error) {
+// Atualiza o estoque e registra a movimentação em transação atômica.
+func (s *Service) EntradaSucata(tipoBateria string, qtd int, usuarioID uint) (*EstoqueSucata, error) {
 	if qtd <= 0 {
 		return nil, errors.New("quantidade deve ser maior que zero")
 	}
@@ -85,11 +88,19 @@ func (s *Service) EntradaSucata(tipoBateria string, qtd int) (*EstoqueSucata, er
 		return nil, errors.New("tipo de sucata não encontrado — cadastre o tipo antes de dar entrada")
 	}
 
-	sucata.Qtd += qtd
-	sucata.PesoTotal = float64(sucata.Qtd) * sucata.PesoUnitario
-	sucata.ValorTotal = float64(sucata.Qtd) * sucata.ValorUnitario
+	err = s.repo.DB().Transaction(func(tx *gorm.DB) error {
+		sucata.Qtd += qtd
+		sucata.PesoTotal = float64(sucata.Qtd) * sucata.PesoUnitario
+		sucata.ValorTotal = float64(sucata.Qtd) * sucata.ValorUnitario
 
-	if err := s.repo.Atualizar(sucata); err != nil {
+		if err := tx.Save(sucata).Error; err != nil {
+			return err
+		}
+
+		return s.movRepo.Registrar(tx, sucata.ID, usuarioID, "entrada_sucata", qtd)
+	})
+
+	if err != nil {
 		return nil, errors.New("erro ao registrar entrada de sucata")
 	}
 
@@ -97,8 +108,8 @@ func (s *Service) EntradaSucata(tipoBateria string, qtd int) (*EstoqueSucata, er
 }
 
 // SaidaSucata registra a saída de unidades de sucata de um tipo específico.
-// Garante que o estoque nunca fica negativo (regra de negócio RN01).
-func (s *Service) SaidaSucata(tipoBateria string, qtd int) (*EstoqueSucata, error) {
+// Garante que o estoque nunca fica negativo e registra movimentação em transação atômica.
+func (s *Service) SaidaSucata(tipoBateria string, qtd int, usuarioID uint) (*EstoqueSucata, error) {
 	if qtd <= 0 {
 		return nil, errors.New("quantidade deve ser maior que zero")
 	}
@@ -112,11 +123,19 @@ func (s *Service) SaidaSucata(tipoBateria string, qtd int) (*EstoqueSucata, erro
 		return nil, errors.New("quantidade solicitada maior que o estoque disponível")
 	}
 
-	sucata.Qtd -= qtd
-	sucata.PesoTotal = float64(sucata.Qtd) * sucata.PesoUnitario
-	sucata.ValorTotal = float64(sucata.Qtd) * sucata.ValorUnitario
+	err = s.repo.DB().Transaction(func(tx *gorm.DB) error {
+		sucata.Qtd -= qtd
+		sucata.PesoTotal = float64(sucata.Qtd) * sucata.PesoUnitario
+		sucata.ValorTotal = float64(sucata.Qtd) * sucata.ValorUnitario
 
-	if err := s.repo.Atualizar(sucata); err != nil {
+		if err := tx.Save(sucata).Error; err != nil {
+			return err
+		}
+
+		return s.movRepo.Registrar(tx, sucata.ID, usuarioID, "saida_sucata", qtd)
+	})
+
+	if err != nil {
 		return nil, errors.New("erro ao registrar saída de sucata")
 	}
 

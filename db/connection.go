@@ -7,6 +7,7 @@ import (
 
 	"super-br/config"
 	"super-br/internal/domain/estoque"
+	movimentacao_sucata "super-br/internal/domain/movimentacao_sucata"
 	"super-br/internal/domain/movimentacao"
 	"super-br/internal/domain/notificacao"
 	"super-br/internal/domain/produto"
@@ -33,7 +34,6 @@ func Connect(cfg *config.Config) *gorm.DB {
 		cfg.DBName,
 	)
 
-	// Em produção, considere trocar logger.Default por um logger estruturado.
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Warn),
 	})
@@ -49,6 +49,7 @@ func Connect(cfg *config.Config) *gorm.DB {
 		&estoque.Estoque{},
 		&sucata.EstoqueSucata{},
 		&movimentacao.Movimentacao{},
+		&movimentacao_sucata.MovimentacaoSucata{},
 		&venda.Venda{},
 		&venda.ItemVenda{},
 		&venda.Pagamento{},

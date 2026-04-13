@@ -8,6 +8,8 @@ import (
 	"super-br/db"
 	"super-br/internal/domain/estoque"
 	"super-br/internal/domain/movimentacao"
+	movs "super-br/internal/domain/movimentacao_sucata"
+	"super-br/internal/domain/notificacao"
 	"super-br/internal/domain/produto"
 	"super-br/internal/domain/sucata"
 	"super-br/internal/domain/usuario"
@@ -27,16 +29,22 @@ func main() {
 	produtoRepo := produto.NewRepository(database)
 	estoqueRepo := estoque.NewRepository(database)
 	movRepo := movimentacao.NewRepository(database)
+	movSucataRepo := movs.NewRepository(database)
 	sucataRepo := sucata.NewRepository(database)
 	vendaRepo := venda.NewRepository(database)
+	notifRepo := notificacao.NewRepository(database)
 
 	// Services
+	// notifService é criado primeiro pois é injetado nos outros services.
+	notifService := notificacao.NewService(notifRepo)
+
 	usuarioService := usuario.NewService(usuarioRepo, cfg.JWTSecret)
 	produtoService := produto.NewService(produtoRepo)
-	estoqueService := estoque.NewService(estoqueRepo, produtoRepo, movRepo)
-	sucataService := sucata.NewService(sucataRepo)
-	vendaService := venda.NewService(vendaRepo, estoqueRepo, produtoRepo, movRepo)
+	estoqueService := estoque.NewService(estoqueRepo, produtoRepo, movRepo, notifService, cfg.EstoqueMinimo)
+	sucataService := sucata.NewService(sucataRepo, movSucataRepo)
+	vendaService := venda.NewService(vendaRepo, estoqueRepo, produtoRepo, movRepo, notifService)
 	movimentacaoService := movimentacao.NewService(movRepo)
+	movSucataService := movs.NewService(movSucataRepo)
 
 	// Handlers
 	usuarioHandler := usuario.NewHandler(usuarioService)
@@ -45,6 +53,8 @@ func main() {
 	sucataHandler := sucata.NewHandler(sucataService)
 	vendaHandler := venda.NewHandler(vendaService)
 	movimentacaoHandler := movimentacao.NewHandler(movimentacaoService)
+	movSucataHandler := movs.NewHandler(movSucataService)
+	notifHandler := notificacao.NewHandler(notifService)
 
 	r := gin.Default()
 
@@ -104,10 +114,17 @@ func main() {
 		protected.PATCH("/vendas/:id/confirmar", middleware.ExigirPerfil("admin"), vendaHandler.ConfirmarVenda)
 		protected.PATCH("/vendas/:id/cancelar", middleware.ExigirPerfil("admin"), vendaHandler.CancelarVenda)
 
-		// Movimentacoes — somente leitura, todos os perfis autenticados
-		// Filtros via query: ?tipo=entrada|saida, ?item_id=N, ?produto_id=N
-		// ?inicio=YYYY-MM-DD&fim=YYYY-MM-DD
+		// Movimentacoes de baterias
 		protected.GET("/movimentacoes", movimentacaoHandler.Listar)
+
+		// Movimentacoes de sucata
+		protected.GET("/movimentacoes/sucata", movSucataHandler.Listar)
+
+		// Notificacoes — todos os perfis autenticados veem as suas próprias
+		// Apenas admin e superadmin recebem notificações do sistema
+		protected.GET("/notificacoes", notifHandler.Listar)
+		protected.PATCH("/notificacoes/:id/ler", notifHandler.MarcarComoLida)
+		protected.PATCH("/notificacoes/ler-todas", notifHandler.MarcarTodasComoLidas)
 	}
 
 	if err := r.Run(":" + cfg.ServerPort); err != nil {

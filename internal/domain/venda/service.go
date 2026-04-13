@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"super-br/internal/domain/estoque"
 	"super-br/internal/domain/movimentacao"
+	"super-br/internal/domain/notificacao"
 	"super-br/internal/domain/produto"
 	"time"
 
@@ -14,10 +15,11 @@ import (
 
 // Service contém a lógica de negócio do domínio de vendas.
 type Service struct {
-	repo        *Repository
-	estoqueRepo *estoque.Repository
-	produtoRepo *produto.Repository
-	movRepo     *movimentacao.Repository
+	repo         *Repository
+	estoqueRepo  *estoque.Repository
+	produtoRepo  *produto.Repository
+	movRepo      *movimentacao.Repository
+	notifService *notificacao.Service
 }
 
 // NewService cria o service injetando todos os repositórios necessários.
@@ -26,46 +28,37 @@ func NewService(
 	estoqueRepo *estoque.Repository,
 	produtoRepo *produto.Repository,
 	movRepo *movimentacao.Repository,
+	notifService *notificacao.Service,
 ) *Service {
 	return &Service{
-		repo:        repo,
-		estoqueRepo: estoqueRepo,
-		produtoRepo: produtoRepo,
-		movRepo:     movRepo,
+		repo:         repo,
+		estoqueRepo:  estoqueRepo,
+		produtoRepo:  produtoRepo,
+		movRepo:      movRepo,
+		notifService: notifService,
 	}
 }
 
-// itemInput representa um item a ser incluído na venda,
-// com o ID do produto e o tipo de preço desejado (atacado ou varejo).
+// itemInput representa um item a ser incluído na venda.
 type itemInput struct {
 	ProdutoID uint
 	TipoPreco string // "atacado" ou "varejo"
 }
 
 // pagamentoInput representa uma forma de pagamento registrada na venda.
-// O valor é o que foi efetivamente recebido — não é validado contra o total
-// da venda pois o negócio permite descontos, negociações e pagamentos parciais.
 type pagamentoInput struct {
 	Tipo  string
 	Valor float64
 }
 
 // CriarVenda inicia uma nova venda com status "pendente".
-// Reserva os itens de estoque com FOR UPDATE para evitar venda dupla,
-// calcula o valor total dos produtos e registra os pagamentos informados.
-//
-// Pagamentos são opcionais na criação — podem ser registrados depois.
-// O valor pago NÃO é validado contra o total da venda, pois o negócio
-// permite negociações, descontos e formas de pagamento variáveis.
-//
-// Toda a operação acontece em uma única transação atômica.
+// Reserva os itens de estoque com FOR UPDATE para evitar venda dupla.
 func (s *Service) CriarVenda(
 	nomeCliente, documentoCliente, telefoneCliente string,
 	itens []itemInput,
 	pagamentos []pagamentoInput,
 	usuarioID uint,
 ) (*Venda, error) {
-	// Venda sem itens não faz sentido — regra de negócio do documento de escopo.
 	if len(itens) == 0 {
 		return nil, errors.New("a venda deve conter ao menos um item")
 	}
@@ -76,16 +69,12 @@ func (s *Service) CriarVenda(
 		var valorTotal float64
 		var itensCriados []ItemVenda
 
-		// Passo 1: reservar cada item do estoque.
-		// FOR UPDATE garante que nenhum outro usuário reserve o mesmo item
-		// simultaneamente, prevenindo a venda dupla da mesma bateria.
 		for _, input := range itens {
 			p, err := s.produtoRepo.BuscarPorID(input.ProdutoID)
 			if err != nil {
 				return fmt.Errorf("produto não encontrado: id %d", input.ProdutoID)
 			}
 
-			// Determina o valor unitário conforme o tipo de preço solicitado.
 			var valorUnitario float64
 			switch input.TipoPreco {
 			case "varejo":
@@ -96,7 +85,6 @@ func (s *Service) CriarVenda(
 				return errors.New("tipo de preço inválido — use 'atacado' ou 'varejo'")
 			}
 
-			// Busca e trava o primeiro item disponível do produto.
 			var itemEstoque estoque.ItemEstoque
 			result := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 				Where("produto_id = ? AND estado = ?", input.ProdutoID, "disponivel").
@@ -105,13 +93,11 @@ func (s *Service) CriarVenda(
 				return errors.New("sem estoque disponível para o produto: " + p.Nome)
 			}
 
-			// Marca o item como reservado — impede nova venda do mesmo item.
 			itemEstoque.Estado = "reservado"
 			if err := tx.Save(&itemEstoque).Error; err != nil {
 				return err
 			}
 
-			// Atualiza o resumo de estoque: reduz QtdAtual.
 			var resumo estoque.Estoque
 			if err := tx.Where("produto_id = ?", input.ProdutoID).First(&resumo).Error; err != nil {
 				return errors.New("resumo de estoque não encontrado")
@@ -134,7 +120,6 @@ func (s *Service) CriarVenda(
 			})
 		}
 
-		// Passo 2: criar a venda com o valor total calculado dos produtos.
 		novaVenda := &Venda{
 			Data:             time.Now(),
 			NomeCliente:      nomeCliente,
@@ -148,7 +133,6 @@ func (s *Service) CriarVenda(
 			return err
 		}
 
-		// Passo 3: criar os itens de venda vinculados.
 		for i := range itensCriados {
 			itensCriados[i].VendaID = novaVenda.ID
 			if err := tx.Create(&itensCriados[i]).Error; err != nil {
@@ -156,8 +140,6 @@ func (s *Service) CriarVenda(
 			}
 		}
 
-		// Passo 4: criar os pagamentos, se informados.
-		// Cada pagamento registra o valor efetivamente recebido naquela forma.
 		for _, pg := range pagamentos {
 			if pg.Valor <= 0 {
 				return errors.New("valor de pagamento deve ser maior que zero")
@@ -180,12 +162,11 @@ func (s *Service) CriarVenda(
 		return nil, err
 	}
 
-	// Recarrega com todos os relacionamentos para retornar completa.
 	return s.repo.BuscarPorID(vendaCriada.ID)
 }
 
-// ConfirmarVenda finaliza uma venda pendente, marcando os itens como "vendido"
-// e registrando a movimentação de saída para cada bateria vendida.
+// ConfirmarVenda finaliza uma venda pendente, marcando os itens como "vendido",
+// registrando movimentação de saída e notificando os admins.
 func (s *Service) ConfirmarVenda(vendaID, usuarioID uint) (*Venda, error) {
 	err := s.repo.DB().Transaction(func(tx *gorm.DB) error {
 		var v Venda
@@ -212,7 +193,12 @@ func (s *Service) ConfirmarVenda(vendaID, usuarioID uint) (*Venda, error) {
 		}
 
 		v.Status = StatusConcluida
-		return tx.Save(&v).Error
+		if err := tx.Save(&v).Error; err != nil {
+			return err
+		}
+
+		// Notifica venda realizada.
+		return s.notifService.NotificarVendaRealizada(tx, v.ID, v.NomeCliente, v.ValorTotal)
 	})
 
 	if err != nil {
@@ -223,7 +209,6 @@ func (s *Service) ConfirmarVenda(vendaID, usuarioID uint) (*Venda, error) {
 }
 
 // CancelarVenda reverte uma venda pendente, devolvendo os itens ao estoque disponível.
-// Somente vendas pendentes podem ser canceladas.
 func (s *Service) CancelarVenda(vendaID, usuarioID uint) (*Venda, error) {
 	err := s.repo.DB().Transaction(func(tx *gorm.DB) error {
 		var v Venda

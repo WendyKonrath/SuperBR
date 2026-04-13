@@ -5,6 +5,7 @@ package config
 import (
 	"log"
 	"os"
+	"strconv"
 
 	"github.com/joho/godotenv"
 )
@@ -12,13 +13,14 @@ import (
 // Config agrupa todas as configurações da aplicação.
 // Os valores são lidos do arquivo .env na raiz do projeto.
 type Config struct {
-	DBHost     string
-	DBPort     string
-	DBUser     string
-	DBPassword string
-	DBName     string
-	ServerPort string
-	JWTSecret  string
+	DBHost        string
+	DBPort        string
+	DBUser        string
+	DBPassword    string
+	DBName        string
+	ServerPort    string
+	JWTSecret     string
+	EstoqueMinimo int // Limiar de estoque baixo para disparo de notificação
 }
 
 // Load lê o arquivo .env e retorna a configuração populada.
@@ -31,14 +33,23 @@ func Load() *Config {
 		log.Println("Aviso: arquivo .env não encontrado — usando variáveis do ambiente do sistema")
 	}
 
+	// Lê o limiar de estoque mínimo — padrão 3 se não configurado.
+	estoqueMinimo := 3
+	if val := os.Getenv("ESTOQUE_MINIMO"); val != "" {
+		if n, err := strconv.Atoi(val); err == nil && n > 0 {
+			estoqueMinimo = n
+		}
+	}
+
 	cfg := &Config{
-		DBHost:     os.Getenv("DB_HOST"),
-		DBPort:     os.Getenv("DB_PORT"),
-		DBUser:     os.Getenv("DB_USER"),
-		DBPassword: os.Getenv("DB_PASSWORD"),
-		DBName:     os.Getenv("DB_NAME"),
-		ServerPort: os.Getenv("SERVER_PORT"),
-		JWTSecret:  os.Getenv("JWT_SECRET"),
+		DBHost:        os.Getenv("DB_HOST"),
+		DBPort:        os.Getenv("DB_PORT"),
+		DBUser:        os.Getenv("DB_USER"),
+		DBPassword:    os.Getenv("DB_PASSWORD"),
+		DBName:        os.Getenv("DB_NAME"),
+		ServerPort:    os.Getenv("SERVER_PORT"),
+		JWTSecret:     os.Getenv("JWT_SECRET"),
+		EstoqueMinimo: estoqueMinimo,
 	}
 
 	// Valida campos obrigatórios — falhar cedo evita erros obscuros depois.
