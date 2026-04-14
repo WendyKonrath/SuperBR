@@ -42,7 +42,7 @@ func NewService(
 // itemInput representa um item a ser incluído na venda.
 type itemInput struct {
 	ProdutoID uint
-	TipoPreco string // "atacado" ou "varejo"
+	TipoPreco string
 }
 
 // pagamentoInput representa uma forma de pagamento registrada na venda.
@@ -54,7 +54,7 @@ type pagamentoInput struct {
 // CriarVenda inicia uma nova venda com status "pendente".
 // Reserva os itens de estoque com FOR UPDATE para evitar venda dupla.
 func (s *Service) CriarVenda(
-	nomeCliente, documentoCliente, telefoneCliente string,
+	nomeCliente, documentoCliente, telefoneCliente, observacoes string,
 	itens []itemInput,
 	pagamentos []pagamentoInput,
 	usuarioID uint,
@@ -112,7 +112,6 @@ func (s *Service) CriarVenda(
 			}
 
 			valorTotal += valorUnitario
-
 			itensCriados = append(itensCriados, ItemVenda{
 				ItemEstoqueID: itemEstoque.ID,
 				ValorUnitario: valorUnitario,
@@ -125,6 +124,7 @@ func (s *Service) CriarVenda(
 			NomeCliente:      nomeCliente,
 			DocumentoCliente: documentoCliente,
 			TelefoneCliente:  telefoneCliente,
+			Observacoes:      observacoes,
 			ValorTotal:       valorTotal,
 			Status:           StatusPendente,
 			UsuarioID:        usuarioID,
@@ -165,8 +165,7 @@ func (s *Service) CriarVenda(
 	return s.repo.BuscarPorID(vendaCriada.ID)
 }
 
-// ConfirmarVenda finaliza uma venda pendente, marcando os itens como "vendido",
-// registrando movimentação de saída e notificando os admins.
+// ConfirmarVenda finaliza uma venda pendente, marcando os itens como "vendido".
 func (s *Service) ConfirmarVenda(vendaID, usuarioID uint) (*Venda, error) {
 	err := s.repo.DB().Transaction(func(tx *gorm.DB) error {
 		var v Venda
@@ -197,7 +196,6 @@ func (s *Service) ConfirmarVenda(vendaID, usuarioID uint) (*Venda, error) {
 			return err
 		}
 
-		// Notifica venda realizada.
 		return s.notifService.NotificarVendaRealizada(tx, v.ID, v.NomeCliente, v.ValorTotal)
 	})
 
@@ -208,7 +206,7 @@ func (s *Service) ConfirmarVenda(vendaID, usuarioID uint) (*Venda, error) {
 	return s.repo.BuscarPorID(vendaID)
 }
 
-// CancelarVenda reverte uma venda pendente, devolvendo os itens ao estoque disponível.
+// CancelarVenda reverte uma venda pendente, devolvendo os itens ao estoque.
 func (s *Service) CancelarVenda(vendaID, usuarioID uint) (*Venda, error) {
 	err := s.repo.DB().Transaction(func(tx *gorm.DB) error {
 		var v Venda

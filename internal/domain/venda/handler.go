@@ -31,54 +31,45 @@ type pagamentoVendaInput struct {
 }
 
 // criarVendaInput representa o corpo completo da requisição de criação de venda.
-// Pagamentos são opcionais — podem ser omitidos e registrados depois.
+// Observacoes é opcional — aparece no campo "Observações" do comprovante PDF.
 type criarVendaInput struct {
 	NomeCliente      string                `json:"nome_cliente" binding:"required"`
 	DocumentoCliente string                `json:"documento_cliente"`
 	TelefoneCliente  string                `json:"telefone_cliente"`
+	Observacoes      string                `json:"observacoes"`
 	Itens            []itemVendaInput      `json:"itens" binding:"required,min=1,dive"`
 	Pagamentos       []pagamentoVendaInput `json:"pagamentos" binding:"omitempty,dive"`
 }
 
-// traduzirErroBinding converte as mensagens técnicas do validator do Gin
-// em mensagens amigáveis para o usuário final.
+// traduzirErroBinding converte mensagens técnicas do validator em mensagens amigáveis.
 func traduzirErroBinding(err error) string {
 	msg := err.Error()
 
-	// Itens
 	if contains(msg, "Itens") && contains(msg, "min") {
 		return "a venda deve conter ao menos um item"
 	}
 	if contains(msg, "Itens") && contains(msg, "required") {
 		return "informe ao menos um item na venda"
 	}
-
-	// Campos dos itens
 	if contains(msg, "ProdutoID") && contains(msg, "required") {
 		return "produto_id é obrigatório em cada item"
 	}
 	if contains(msg, "TipoPreco") && contains(msg, "oneof") {
 		return "tipo_preco inválido — use 'atacado' ou 'varejo'"
 	}
-
-	// Pagamentos
 	if contains(msg, "Pagamentos") && contains(msg, "Valor") {
 		return "valor de pagamento deve ser maior que zero"
 	}
 	if contains(msg, "Pagamentos") && contains(msg, "Tipo") && contains(msg, "oneof") {
 		return "tipo de pagamento inválido — use: pix, credito, debito, dinheiro ou sucata"
 	}
-
-	// Nome do cliente
 	if contains(msg, "NomeCliente") && contains(msg, "required") {
 		return "nome_cliente é obrigatório"
 	}
 
-	// Fallback genérico — nunca expõe a mensagem técnica do validator
 	return "dados inválidos — verifique os campos enviados"
 }
 
-// contains é um helper simples para checar substring.
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStr(s, substr))
 }
@@ -93,7 +84,6 @@ func containsStr(s, substr string) bool {
 }
 
 // CriarVenda inicia uma nova venda com status "pendente".
-// Reserva os itens do estoque imediatamente para evitar venda dupla.
 // POST /api/vendas
 func (h *Handler) CriarVenda(c *gin.Context) {
 	var input criarVendaInput
@@ -106,24 +96,19 @@ func (h *Handler) CriarVenda(c *gin.Context) {
 
 	itens := make([]itemInput, len(input.Itens))
 	for i, it := range input.Itens {
-		itens[i] = itemInput{
-			ProdutoID: it.ProdutoID,
-			TipoPreco: it.TipoPreco,
-		}
+		itens[i] = itemInput{ProdutoID: it.ProdutoID, TipoPreco: it.TipoPreco}
 	}
 
 	pags := make([]pagamentoInput, len(input.Pagamentos))
 	for i, pg := range input.Pagamentos {
-		pags[i] = pagamentoInput{
-			Tipo:  pg.Tipo,
-			Valor: pg.Valor,
-		}
+		pags[i] = pagamentoInput{Tipo: pg.Tipo, Valor: pg.Valor}
 	}
 
 	v, err := h.service.CriarVenda(
 		input.NomeCliente,
 		input.DocumentoCliente,
 		input.TelefoneCliente,
+		input.Observacoes,
 		itens,
 		pags,
 		usuarioID.(uint),
@@ -176,7 +161,7 @@ func (h *Handler) CancelarVenda(c *gin.Context) {
 	c.JSON(http.StatusOK, v)
 }
 
-// BuscarPorID retorna os detalhes de uma venda específica com todos os relacionamentos.
+// BuscarPorID retorna os detalhes de uma venda pelo ID.
 // GET /api/vendas/:id
 func (h *Handler) BuscarPorID(c *gin.Context) {
 	id, err := strconv.ParseUint(c.Param("id"), 10, 32)
@@ -200,7 +185,6 @@ func (h *Handler) BuscarPorID(c *gin.Context) {
 // GET /api/vendas?status=pendente
 // GET /api/vendas?inicio=2025-01-01&fim=2025-01-31
 func (h *Handler) Listar(c *gin.Context) {
-	// Filtro por status.
 	if status := c.Query("status"); status != "" {
 		vendas, err := h.service.ListarPorStatus(status)
 		if err != nil {
@@ -211,7 +195,6 @@ func (h *Handler) Listar(c *gin.Context) {
 		return
 	}
 
-	// Filtro por período — os dois parâmetros devem vir juntos.
 	inicioStr := c.Query("inicio")
 	fimStr := c.Query("fim")
 	if inicioStr != "" || fimStr != "" {
@@ -225,7 +208,6 @@ func (h *Handler) Listar(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"erro": "formato de 'inicio' inválido — use 2006-01-02"})
 			return
 		}
-		// Inclui o dia inteiro até 23:59:59.
 		fim, err := time.Parse("2006-01-02", fimStr)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"erro": "formato de 'fim' inválido — use 2006-01-02"})
@@ -242,7 +224,6 @@ func (h *Handler) Listar(c *gin.Context) {
 		return
 	}
 
-	// Sem filtro: vendas do dia atual.
 	hoje := time.Now().Truncate(24 * time.Hour)
 	fim := hoje.Add(23*time.Hour + 59*time.Minute + 59*time.Second)
 

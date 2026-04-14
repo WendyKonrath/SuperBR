@@ -1,7 +1,4 @@
 // Package venda gerencia as vendas realizadas, seus itens e formas de pagamento.
-// Uma venda é composta por: cabeçalho (Venda), itens vendidos (ItemVenda)
-// e registros de pagamento (Pagamento), que podem ser múltiplos por venda
-// (ex: parte em Pix, parte em dinheiro).
 package venda
 
 import (
@@ -10,10 +7,6 @@ import (
 	"time"
 )
 
-// StatusVenda define os estados possíveis de uma venda.
-// pendente  → venda criada mas não finalizada
-// concluida → venda confirmada e estoque baixado
-// cancelada → venda revertida e estoque restaurado
 const (
 	StatusPendente  = "pendente"
 	StatusConcluida = "concluida"
@@ -21,12 +14,14 @@ const (
 )
 
 // Venda representa uma transação de venda realizada no sistema.
+// O campo Observacoes é opcional e aparece no comprovante PDF.
 type Venda struct {
 	ID               uint            `gorm:"primaryKey;autoIncrement" json:"id"`
 	Data             time.Time       `gorm:"not null" json:"data"`
 	NomeCliente      string          `gorm:"type:varchar(100);not null" json:"nome_cliente"`
 	DocumentoCliente string          `gorm:"type:varchar(20)" json:"documento_cliente"`
 	TelefoneCliente  string          `gorm:"type:varchar(20)" json:"telefone_cliente"`
+	Observacoes      string          `gorm:"type:text" json:"observacoes"`
 	ValorTotal       float64         `gorm:"type:decimal(10,2);not null" json:"valor_total"`
 	Status           string          `gorm:"type:varchar(20);not null;default:'pendente'" json:"status"`
 	UsuarioID        uint            `gorm:"not null" json:"usuario_id"`
@@ -38,8 +33,6 @@ type Venda struct {
 }
 
 // ItemVenda representa uma bateria individual vendida dentro de uma venda.
-// Cada item referencia um ItemEstoque específico pelo seu ID único,
-// garantindo rastreabilidade de qual bateria foi vendida.
 type ItemVenda struct {
 	ID            uint                `gorm:"primaryKey;autoIncrement" json:"id"`
 	VendaID       uint                `gorm:"not null" json:"venda_id"`
@@ -52,7 +45,6 @@ type ItemVenda struct {
 }
 
 // Pagamento representa uma forma de pagamento utilizada em uma venda.
-// Uma venda pode ter múltiplos pagamentos (pagamento parcial em formas diferentes).
 // Tipos válidos: "pix", "credito", "debito", "dinheiro", "sucata".
 type Pagamento struct {
 	ID        uint      `gorm:"primaryKey;autoIncrement" json:"id"`
