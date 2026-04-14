@@ -6,6 +6,7 @@ import (
 
 	"super-br/config"
 	"super-br/db"
+	"super-br/internal/domain/comprovante"
 	"super-br/internal/domain/estoque"
 	"super-br/internal/domain/movimentacao"
 	movs "super-br/internal/domain/movimentacao_sucata"
@@ -46,6 +47,12 @@ func main() {
 	movimentacaoService := movimentacao.NewService(movRepo)
 	movSucataService := movs.NewService(movSucataRepo)
 
+	// comprovanteService salva PDFs em ./storage/comprovantes — criado automaticamente.
+	comprovanteService, err := comprovante.NewService(cfg.PastaComprovantes)
+	if err != nil {
+		log.Fatal("Erro ao inicializar serviço de comprovantes: ", err)
+	}
+
 	// Handlers
 	usuarioHandler := usuario.NewHandler(usuarioService)
 	produtoHandler := produto.NewHandler(produtoService)
@@ -55,6 +62,7 @@ func main() {
 	movimentacaoHandler := movimentacao.NewHandler(movimentacaoService)
 	movSucataHandler := movs.NewHandler(movSucataService)
 	notifHandler := notificacao.NewHandler(notifService)
+	comprovanteHandler := comprovante.NewHandler(comprovanteService, vendaService)
 
 	r := gin.Default()
 
@@ -114,14 +122,16 @@ func main() {
 		protected.PATCH("/vendas/:id/confirmar", middleware.ExigirPerfil("admin"), vendaHandler.ConfirmarVenda)
 		protected.PATCH("/vendas/:id/cancelar", middleware.ExigirPerfil("admin"), vendaHandler.CancelarVenda)
 
+		// Comprovante de venda em PDF — acessível para admin, financeiro e vendas
+		protected.GET("/vendas/:id/comprovante", middleware.ExigirPerfil("admin", "financeiro", "vendas"), comprovanteHandler.Gerar)
+
 		// Movimentacoes de baterias
 		protected.GET("/movimentacoes", movimentacaoHandler.Listar)
 
 		// Movimentacoes de sucata
 		protected.GET("/movimentacoes/sucata", movSucataHandler.Listar)
 
-		// Notificacoes — todos os perfis autenticados veem as suas próprias
-		// Apenas admin e superadmin recebem notificações do sistema
+		// Notificacoes
 		protected.GET("/notificacoes", notifHandler.Listar)
 		protected.PATCH("/notificacoes/:id/ler", notifHandler.MarcarComoLida)
 		protected.PATCH("/notificacoes/ler-todas", notifHandler.MarcarTodasComoLidas)
